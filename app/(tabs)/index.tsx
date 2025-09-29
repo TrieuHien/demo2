@@ -1,98 +1,233 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, TouchableOpacity, View } from 'react-native';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+
+// Types
+export type Student = {
+  id: string;
+  name: string;
+  email: string;
+  avatar: any; // static require for simplicity
+};
+
+// Preload meo1..meo20 avatars for static require usage
+const MEO_AVATARS = [
+  require('@/assets/images/meo1.png'),
+  require('@/assets/images/meo2.png'),
+  require('@/assets/images/meo3.png'),
+  require('@/assets/images/meo4.png'),
+  require('@/assets/images/meo5.png'),
+  require('@/assets/images/meo6.png'),
+  require('@/assets/images/meo7.png'),
+  require('@/assets/images/meo8.png'),
+  require('@/assets/images/meo9.png'),
+  require('@/assets/images/meo10.png'),
+  require('@/assets/images/meo11.png'),
+  require('@/assets/images/meo12.png'),
+  require('@/assets/images/meo13.png'),
+  require('@/assets/images/meo14.png'),
+  require('@/assets/images/meo15.png'),
+  require('@/assets/images/meo16.png'),
+  require('@/assets/images/meo17.png'),
+  require('@/assets/images/meo18.png'),
+  require('@/assets/images/meo19.png'),
+  require('@/assets/images/meo20.png'),
+];
+
+// Mock student generator
+function createMockStudent(index: number): Student {
+  // Pseudo-random but stable distribution across 20 avatars
+  const avatarIdx = (index * 7) % MEO_AVATARS.length;
+  return {
+    id: `student-${index}`,
+    name: `Student ${index + 1}`,
+    email: `student${index + 1}@example.edu`,
+    avatar: MEO_AVATARS[avatarIdx],
+  };
+}
+
+function generateStudents(offset: number, limit: number): Student[] {
+  const list: Student[] = [];
+  for (let i = offset; i < offset + limit; i++) {
+    list.push(createMockStudent(i));
+  }
+  return list;
+}
+
+const PAGE_SIZE = 10;
+const MAX_STUDENTS = 50;
+const STORAGE_KEY = 'students:list:v2';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const router = useRouter();
+  const [students, setStudents] = useState<Student[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const loadedCountRef = useRef(0);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  // Hydrate from storage on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          let parsed: Student[] = JSON.parse(raw);
+          if (parsed.length > MAX_STUDENTS) parsed = parsed.slice(0, MAX_STUDENTS);
+          setStudents(parsed);
+          loadedCountRef.current = parsed.length;
+          setHasMore(parsed.length < MAX_STUDENTS);
+        } else {
+          // initial load
+          const initial = generateStudents(0, PAGE_SIZE);
+          setStudents(initial);
+          loadedCountRef.current = initial.length;
+          setHasMore(true);
+          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
+        }
+      } catch (e) {
+        // fallback to fresh
+        const initial = generateStudents(0, PAGE_SIZE);
+        setStudents(initial);
+        loadedCountRef.current = initial.length;
+        setHasMore(true);
+      }
+    })();
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      // Simulate fetch fresh data
+      const fresh = generateStudents(0, PAGE_SIZE);
+      setStudents(fresh);
+      loadedCountRef.current = fresh.length;
+      setHasMore(true);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  const loadMore = useCallback(async () => {
+    if (isLoadingMore || !hasMore) return;
+    setIsLoadingMore(true);
+    try {
+      // Simulate API latency
+      await new Promise((res) => setTimeout(res, 500));
+      setStudents((prev) => {
+        const remaining = Math.max(0, MAX_STUDENTS - prev.length);
+        const toLoad = Math.min(PAGE_SIZE, remaining);
+        const next = toLoad > 0 ? generateStudents(prev.length, toLoad) : [];
+        const newList = [...prev, ...next];
+        loadedCountRef.current = newList.length;
+        const noMore = newList.length >= MAX_STUDENTS;
+        setHasMore(!noMore);
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+        return newList;
+      });
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, hasMore]);
+
+  const renderItem = useCallback(({ item }: { item: Student }) => {
+    return (
+      <TouchableOpacity
+        style={styles.itemContainer}
+        activeOpacity={0.7}
+        onPress={() => router.push({ pathname: `/student/${item.id}`, params: { name: item.name } })}
+      >
+        <Image source={item.avatar} style={styles.avatar} contentFit="cover" />
+        <View style={styles.itemTextContainer}>
+          <ThemedText type="defaultSemiBold">{item.name}</ThemedText>
+          <ThemedText style={styles.email}>{item.email}</ThemedText>
+        </View>
+      </TouchableOpacity>
+    );
+  }, [router]);
+
+  const keyExtractor = useCallback((s: Student) => s.id, []);
+
+  const ListFooter = useMemo(() => {
+    if (isLoadingMore) {
+      return (
+        <View style={styles.footer}>
+          <ActivityIndicator />
+          <ThemedText style={styles.footerText}>Loading more…</ThemedText>
+        </View>
+      );
+    }
+    if (!hasMore) {
+      return (
+        <View style={styles.footer}>
+          <ThemedText style={styles.footerText}>No more students available</ThemedText>
+        </View>
+      );
+    }
+    return <View style={{ height: 16 }} />;
+  }, [isLoadingMore, hasMore]);
+
+  return (
+    <ThemedView style={styles.container}>
+      <ThemedText type="title" style={styles.header}>Students</ThemedText>
+      <FlatList
+        data={students}
+        keyExtractor={keyExtractor}
+        renderItem={renderItem}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        onEndReachedThreshold={0.5}
+        onEndReached={loadMore}
+        ListFooterComponent={ListFooter}
+        contentContainerStyle={styles.listContent}
+      />
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  container: {
+    flex: 1,
+  },
+  header: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  listContent: {
+    paddingHorizontal: 12,
+    paddingBottom: 24,
+  },
+  itemContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    padding: 12,
+    marginVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(127,127,127,0.08)',
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  itemTextContainer: {
+    marginLeft: 12,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  email: {
+    opacity: 0.8,
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  footer: {
+    height: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footerText: {
+    marginTop: 8,
   },
 });
